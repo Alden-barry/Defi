@@ -1,0 +1,177 @@
+solidity
+pragma solidity ^0.8.0;
+
+// Define a simple ERC20 token interface (assuming we conduct lending and borrowing operations based on some ERC20 token. In a real application, it might interface with the actual token standard implementation)
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address to, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+}
+
+// Contract to manage collateral. Assume collateral is also in the form of an ERC20 token for simplicity.
+contract CollateralManager {
+    // Mapping to store the amount of collateral locked for each user for a particular borrowing
+    mapping(address => mapping(uint256 => uint256)) public collateralLocked;
+    // Mapping to store the collateral token address associated with each borrowing
+    mapping(address => mapping(uint256 => address)) public collateralTokenAddress;
+
+    // Function to lock collateral when a user borrows. Assume the contract has approval to transfer the collateral tokens from the user.
+    function lockCollateral(address user, address tokenAddress, uint256 borrowingId, uint256 amount) external {
+        require(amount > 0, "Collateral amount must be greater than 0");
+        collateralLocked[user][borrowingId] = amount;
+        collateralTokenAddress[user][borrowingId] = tokenAddress;
+        IERC20(tokenAddress).transferFrom(user, address(this), amount);
+    }
+
+    // Function to release collateral when a user repays their borrowing
+    function releaseCollateral(address user, uint256 borrowingId) external {
+        require(collateralLocked[user][borrowingId] > 0, "No collateral locked for this borrowing");
+        address tokenAddress = collateralTokenAddress[user][borrowingId];
+        uint256 amount = collateralLocked[user][borrowingId];
+        collateralLocked[user][borrowingId] = 0;
+        require(IERC20(tokenAddress).transfer(user, amount), "Transfer of collateral failed");
+    }
+
+    // Function to check the amount of collateral locked for a user for a specific borrowing
+    function checkCollateralAmount(address user, uint256 borrowingId) external view returns (uint256) {
+        return collateralLocked[user][borrowingId];
+    }
+}
+
+// The DeFi lending and borrowing contract with more features like tiered lending and different interest rates
+contract AdvancedDeFiLoan {
+    // The address of the associated ERC20 token contract
+    IERC20 public token;
+    // The address of the collateral manager contract
+    CollateralManager public collateralManager;
+
+    // Struct to represent a borrowing record with more details
+    struct Borrowing {
+        uint256 amount;
+        uint256 interestRate;
+        uint256 borrowingTime;
+        uint256 dueDate;
+        bool isRepaid;
+    }
+
+    // Mapping to store the borrowing records for each user
+    mapping(address => Borrowing[]) public userBorrowings;
+    // Mapping to store the deposit balance of each user
+    mapping(address => uint256) public deposits;
+    // Store the borrowing balance of each user (sum of all active borrowings)
+    mapping(address => uint256) public borrows;
+    // Store the interest corresponding to each user's borrowing
+    mapping(address => uint256) public interests;
+    // Store the available funds in the entire lending pool (in terms of the associated ERC20 token)
+    uint256 public availableFunds;
+    // Different tiers of borrowing and their corresponding interest rates and maximum borrowing amounts (simplified example)
+    mapping(uint256 => uint256) public borrowingTiersInterestRates;
+    mapping(uint256 => uint256) public borrowingTiersMaxAmounts;
+
+    // The contract constructor. Initialize the address of the associated ERC20 token contract, collateral manager contract, and set initial available funds and borrowing tiers (Here, initial values are set as examples)
+    constructor(address _tokenAddress, address _collateralManagerAddress) {
+        token = IERC20(_tokenAddress);
+        collateralManager = CollateralManager(_collateralManagerAddress);
+        availableFunds = 10000 * (10 ** 18);  // Assume there are initially 10,000 tokens as available funds. Multiplying by 10 ** 18 here takes into account the general precision of ERC20 tokens.
+
+        // Set up borrowing tiers and their interest rates and max amounts
+        borrowingTiersInterestRates[1] = 5;  // Tier 1 with 5% interest rate
+        borrowingTiersMaxAmounts[1] = 5000 * (10 ** 18);
+        borrowingTiersInterestRates[2] = 8;  // Tier 2 with 8% interest rate
+        borrowingTiersMaxAmounts[2] = 10000 * (10 ** 18);
+    }
+
+    // The function for users to deposit
+    function deposit(uint256 amount) external {
+        require(amount > 0, "Deposit amount must be greater than 0");
+        require(token.transferFrom(msg.sender, address(this), amount), "Transfer failed");
+        deposits[msg.sender] += amount;
+        availableFunds += amount;
+    }
+
+    // The function for users to withdraw
+    function withdraw(uint256 amount) external {
+        require(amount > 0, "Withdrawal amount must be greater than 0");
+        require(deposits[msg.sender] >= amount, "Insufficient deposit balance");
+        deposits[msg.sender] -= amount;
+        availableFunds -= amount;
+        require(token.transfer(msg.sender, amount), "Transfer failed");
+    }
+
+    // Function to determine the borrowing tier based on the requested amount
+    function getBorrowingTier(uint256 amount) public view returns (uint256) {
+        for (uint256 i = 1; i <= 2; i++) {  // Assume only 2 tiers for simplicity
+            if (amount <= borrowingTiersMaxAmounts[i]) {
+                return i;
+            }
+        }
+        revert("Requested borrowing amount exceeds available tiers");
+    }
+
+    // The function for users to borrow with collateral
+    function borrow(uint256 amount) external {
+        require(amount > 0, "Borrowing amount must be greater than 0");
+        uint256 tier = getBorrowingTier(amount);
+        require(availableFunds >= amount, "Insufficient available funds");
+        require(borrowingTiersMaxAmounts[tier] >= amount, "Requested amount exceeds tier limit");
+
+        Borrowing memory newBorrowing;
+        newBorrowing.amount = amount;
+        newBorrowing.interestRate = borrowingTiersInterestRates[tier];
+        newBorrowing.borrowingTime = block.timestamp;
+        newBorrowing.dueDate = block.timestamp + 3600 * 24 * 30;  // Assume 30 days due date for simplicity
+        newBorrowing.isRepaid = false;
+
+        userBorrowings[msg.sender].push(newBorrowing);
+        borrows[msg.sender] += amount;
+        availableFunds -= amount;
+
+        // Assume some collateral token is locked. Here we just call the collateral manager contract to lock it.
+        collateralManager.lockCollateral(msg.sender, address(0), userBorrowings[msg.sender].length - 1, amount / 2);  // Lock half of the borrowing amount as collateral for simplicity
+    }
+
+    // The function for users to repay
+    function repay(uint256 amount, uint256 borrowingIndex) external {
+        require(amount > 0, "Repayment amount must be greater than 0");
+        require(borrowingIndex < userBorrowings[msg.sender].length, "Invalid borrowing index");
+        Borrowing storage borrowing = userBorrowings[msg.sender][borrowingIndex];
+        require(!borrowing.isRepaid, "This borrowing has already been repaid");
+
+        uint256 interest = (borrowing.amount * borrowing.interestRate) / 100;
+        interests[msg.sender] += interest;
+        if (amount >= borrowing.amount + interest) {
+            uint256 excess = amount - (borrowing.amount + interest);
+            borrowing.isRepaid = true;
+            borrows[msg.sender] -= borrowing.amount;
+            availableFunds += borrowing.amount;
+            if (excess > 0) {
+                require(token.transfer(msg.sender, excess), "Transfer failed");
+            }
+            collateralManager.releaseCollateral(msg.sender, borrowingIndex);
+        } else if (amount >= borrowing.amount) {
+            uint256 remainingInterest = amount - borrowing.amount;
+            borrowing.isRepaid = true;
+            borrows[msg.sender] -= borrowing.amount;
+            interests[msg.sender] = remainingInterest;
+            availableFunds += borrowing.amount;
+        } else {
+            borrowing.amount -= amount;
+            availableFunds += amount;
+        }
+    }
+
+    // The function to get the total balance of a user (including deposits, borrowings, and interests)
+    function getUserTotalBalance(address user) external view returns (uint256) {
+        return deposits[user] - borrows[user] - interests[user];
+    }
+
+    // Function to get the details of a specific borrowing for a user
+    function getBorrowingDetails(address user, uint256 borrowingIndex) external view returns (uint256, uint256, uint256, uint256, bool) {
+        require(borrowingIndex < userBorrowings[user].length, "Invalid borrowing index");
+        Borrowing memory borrowing = userBorrowings[user][borrowingIndex];
+        return (borrowing.amount, borrowing.interestRate, borrowing.borrowingTime, borrowing.dueDate, borrowing.isRepaid);
+    }
+}
